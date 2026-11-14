@@ -57,6 +57,19 @@ JUDGE_API_KEY=fill-locally
 
 ## 停止文本或独立复核
 
+### 已收到但被截断的文本回答
+
+`--retry-failed` 不会重发已收到的截断回答。可将失败或含定位异常的核心区间拆成较小片段，并复用完整成功的原始响应：
+
+```bash
+bookocr text-review refine --from-review output/my-book/04-text/<version> --out output/text-retry --api-prefix AI --retry-chars 2200 --retry-context 250
+bookocr text-review submit --out output/text-retry --api-prefix AI --workers 3
+```
+
+该命令保留同一冻结全文、模型和提示词，只重分未完整成功的区间，默认约2200字符、前后各250字符上下文。原始失败回答保存在父目录，不覆盖、不伪装成成功缓存；定位正常的旧候选也会保留。新旧核心区间仍完整覆盖全文，累计token统计单独标明新请求用量。`refine` 只准备，不调用API；`submit` 才开始补跑。同模型同提示词条件下才能复用成功响应，切换模型请新建独立审查。
+
+完成后可对新目录执行 `text-review report` 并使用其中的评测任务。六步工作流的第5步默认仍读取该工作流第4步登记的目录，独立补跑不会静默替换工作流绑定；导入前应确认审查来源，不能把两份结果随意混用。
+
 使用当前阶段版本目录，不是最外层工作目录：
 
 ```bash

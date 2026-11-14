@@ -6,7 +6,7 @@ from pathlib import Path
 
 from bookocr.storage import atomic_text, digest, read_json
 from bookocr.review import csv_text
-from bookocr.text_review import export, load_review, parse_response, prepare, submission_lock, submit
+from bookocr.text_review import export, load_review, parse_response, prepare, prepare_retry, submission_lock, submit
 from bookocr.vision_review import APIError
 
 
@@ -159,6 +159,42 @@ class TextReviewTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     with submission_lock(out):
                         self.fail('second process lock succeeded')
+
+    def test_refine_only_retries_incomplete_ranges_and_reuses_paid_success(self):
+        with tempfile.TemporaryDirectory() as d:
+            source, parent, manifest, text = self.fixture(d)
+            last = manifest['chunks'][-1]['chunk_id']
+            def fake(url, key, body):
+                chunk = json.loads(body['messages'][1]['content'])
+                value = self.response(chunk)
+                if chunk['chunk_id'] == last:
+                    value['choices'][0]['finish_reason'] = 'length'
+                return value
+            submit(parent, self.settings, transport=fake)
+            target = Path(d)/'retry'
+            refined = prepare_retry(parent, target, self.settings, 64, 16)
+            self.assertEqual(refined['refinement']['retry_ids'], [last])
+            self.assertEqual(''.join(text[c['start']:c['end']] for c in refined['chunks']), text)
+            calls = []
+            def success(url, key, body):
+                chunk = json.loads(body['messages'][1]['content'])
+                calls.append(chunk['chunk_id'])
+                return self.response(chunk)
+            report = submit(target, self.settings, transport=success)
+            self.assertTrue(all(key.startswith(last+'-r') for key in calls))
+            self.assertEqual(report['status'], 'awaiting_independent_evaluation')
+            self.assertEqual(report['reviewed_core_characters'], len(text))
+            self.assertEqual(report['cumulative_usage']['total_tokens'], (len(manifest['chunks'])+len(calls))*15)
+            self.assertEqual(load_review(target)[1], text)
+
+    def test_refine_refuses_different_provider_and_complete_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, parent, manifest, _ = self.fixture(d)
+            with self.assertRaises(ValueError):
+                prepare_retry(parent, Path(d)/'other', {**self.settings, 'model': 'other'}, 64, 16)
+            submit(parent, self.settings, transport=lambda url, key, body: self.response(json.loads(body['messages'][1]['content'])))
+            with self.assertRaisesRegex(ValueError, 'No incomplete'):
+                prepare_retry(parent, Path(d)/'retry', self.settings, 64, 16)
 
     def test_terminology_and_low_impact_edits_are_out_of_scope(self):
         with tempfile.TemporaryDirectory() as d:

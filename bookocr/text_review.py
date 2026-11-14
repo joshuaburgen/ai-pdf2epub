@@ -2,6 +2,7 @@
 import csv
 import json
 import re
+import shutil
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -76,13 +77,93 @@ def prepare(source, out, settings, size=6000, context=500):
     return manifest
 
 
-def load_review(out):
+def refined_chunks(text, parent_chunks, retry_ids, size, context):
+    if type(context) is not int or type(size) is not int or not 0 <= context <= size:
+        raise ValueError('Invalid retry context size')
+    result = []
+    for chunk in parent_chunks:
+        if chunk['chunk_id'] not in retry_ids:
+            result.append(dict(chunk))
+            continue
+        for index, part in enumerate(split_chunks(text[chunk['start']:chunk['end']], size, 0), 1):
+            start, end = chunk['start']+part['start'], chunk['start']+part['end']
+            result.append({'chunk_id': chunk['chunk_id']+f'-r{index:02}', 'start': start, 'end': end,
+                           'context_start': max(0, start-context), 'context_end': min(len(text), end+context)})
+    return result
+
+
+def prepare_retry(parent_out, out, settings, size=2200, context=250):
+    parent_out, out = Path(parent_out).resolve(), Path(out).resolve()
+    if out == parent_out or out in parent_out.parents or parent_out in out.parents:
+        raise ValueError('Retry output must be a separate sibling directory')
+    export(parent_out)
+    parent, text = load_review(parent_out)
+    if parent['provider'] != {k: settings[k] for k in ('base_url', 'model')}:
+        raise ValueError('Retry refinement must preserve the provider/model identity')
+    retry_ids, reused = [], []
+    for chunk in parent['chunks']:
+        path = parent_out/'results'/f"{chunk['chunk_id']}.json"
+        record = read_json(path) if path.exists() else {}
+        parsed = record.get('parsed', {})
+        if record.get('status') == 'ok' and not parsed.get('rejected') and not parsed.get('more_issues'):
+            reused.append(chunk['chunk_id'])
+        else:
+            retry_ids.append(chunk['chunk_id'])
+    if not retry_ids:
+        raise ValueError('No incomplete chunks need refinement')
+    manifest = {**parent, 'refinement': {'parent': str(parent_out),
+                'parent_manifest_sha256': digest(parent_out/'manifest.json'),
+                'retry_ids': retry_ids, 'reused_ids': reused, 'size': size, 'context': context},
+                'chunks': refined_chunks(text, parent['chunks'], set(retry_ids), size, context)}
+    marker = out/'manifest.json'
+    if marker.exists():
+        if read_json(marker) != manifest:
+            raise ValueError('Retry plan changed; choose a new directory')
+        load_review(out)
+    else:
+        if out.exists() and any(out.iterdir()):
+            raise ValueError('Retry output is not owned by this workflow')
+        atomic_text(out/'source.md', text)
+        write_json(marker, manifest)
+    for key in reused:
+        source, target = parent_out/'results'/f'{key}.json', out/'results'/f'{key}.json'
+        if target.exists() and read_json(target) != read_json(source):
+            raise ValueError('Conflicting reused response')
+        write_json(target, read_json(source))
+        for path in (parent_out/'attempts').glob(key+'_*.json'):
+            target = out/'attempts'/path.name
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+    export(out)
+    return manifest
+
+
+def load_review(out, seen=None):
     out = Path(out)
+    seen = set() if seen is None else set(seen)
+    if out.resolve() in seen or len(seen) >= 8:
+        raise ValueError('Invalid retry ancestry')
+    seen.add(out.resolve())
     manifest = read_json(out/'manifest.json')
     text = (out/'source.md').read_text(encoding='utf-8')
     if signature(text) != manifest['text_sha256']:
         raise ValueError('Frozen source snapshot changed')
-    if split_chunks(text, manifest['chunk_chars'], manifest['context_chars']) != manifest['chunks']:
+    if manifest.get('refinement'):
+        info = manifest['refinement']
+        parent_out = Path(info['parent'])
+        if digest(parent_out/'manifest.json') != info['parent_manifest_sha256']:
+            raise ValueError('Retry parent manifest changed')
+        parent, parent_text = load_review(parent_out, seen)
+        if parent_text != text or parent['provider'] != manifest['provider'] or parent['prompt'] != manifest['prompt']:
+            raise ValueError('Retry source/provider/prompt changed')
+        retry_ids, reused_ids = set(info['retry_ids']), set(info['reused_ids'])
+        if retry_ids & reused_ids or retry_ids | reused_ids != {c['chunk_id'] for c in parent['chunks']}:
+            raise ValueError('Retry/reuse plan does not cover the parent chunks exactly')
+        expected = refined_chunks(text, parent['chunks'], set(info['retry_ids']), info['size'], info['context'])
+    else:
+        expected = split_chunks(text, manifest['chunk_chars'], manifest['context_chars'])
+    if expected != manifest['chunks']:
         raise ValueError('Chunk manifest changed')
     return manifest, text
 
@@ -211,6 +292,21 @@ def export(out):
                 raise ValueError('Stored issue source anchor changed')
             issues[issue['issue_id']] = issue
     ordered = sorted(issues.values(), key=lambda i: (i['start'], i['issue_id']))
+    if manifest.get('refinement'):
+        info = manifest['refinement']
+        parent_out = Path(info['parent'])
+        parent, parent_text = load_review(parent_out)
+        for chunk in parent['chunks']:
+            path = parent_out/'results'/f"{chunk['chunk_id']}.json"
+            if chunk['chunk_id'] not in info['retry_ids'] or not path.exists():
+                continue
+            try:
+                parsed = parse_response(read_json(path)['response'], parent, chunk, parent_text)
+            except (ValueError, KeyError, TypeError, IndexError):
+                continue
+            for issue in parsed['issues']:
+                issues.setdefault(issue['issue_id'], issue)
+        ordered = sorted(issues.values(), key=lambda i: (i['start'], i['issue_id']))
     fields = ['issue_id', 'chunk_id', 'pdf_page', 'section', 'line', 'start', 'end', 'quote',
               'category', 'severity', 'reason', 'suggestion', 'needs_source_image',
               'minimal_original', 'minimal_replacement', 'status']
@@ -254,6 +350,17 @@ def export(out):
     summary['status'] = 'awaiting_independent_evaluation' if len(valid) == len(manifest['chunks']) and not (
         summary['chunks_with_rejected_issues'] or summary['chunks_with_more_issues']) else 'incomplete'
     summary['stop_requested'] = (out/'STOP').exists()
+    if manifest.get('refinement'):
+        info = manifest['refinement']
+        reused = set(info['reused_ids'])
+        new_records = [r for r in records+archived if r.get('chunk_id') not in reused]
+        prior = read_json(Path(info['parent'])/'summary.json')
+        summary['refined_parent_chunks'] = len(info['retry_ids'])
+        summary['reused_parent_chunks'] = len(reused)
+        summary['new_request_usage'] = {k: sum(r.get('response', {}).get('usage', {}).get(k, 0) or 0 for r in new_records)
+                                        for k in ('prompt_tokens', 'completion_tokens', 'total_tokens')}
+        baseline = prior.get('cumulative_usage', prior['usage'])
+        summary['cumulative_usage'] = {k: baseline[k]+summary['new_request_usage'][k] for k in baseline}
     if summary['stop_requested'] and len(valid) != len(manifest['chunks']):
         summary['status'] = 'stopped'
     write_json(out/'summary.json', summary)
@@ -330,10 +437,14 @@ def submit(out, settings, workers=3, limit=None, retry_failed=False, transport=h
 
 
 def configure_parser(parser):
-    parser.add_argument('action', choices=['prepare', 'submit', 'report', 'stop'])
+    parser.add_argument('action', choices=['prepare', 'refine', 'submit', 'report', 'stop'])
+    parser.add_argument('--from-review')
+    parser.add_argument('--retry-chars', type=int, default=2200)
+    parser.add_argument('--retry-context', type=int, default=250)
     parser.add_argument('--input', default='output/book_readable_md/book/book_simplified.md')
     parser.add_argument('--out', default='output/deepseek_text_repair')
     parser.add_argument('--env-file', default='.env.local')
+    parser.add_argument('--api-prefix', default='DEEPSEEK')
     parser.add_argument('--chunk-chars', type=int, default=6000)
     parser.add_argument('--context-chars', type=int, default=500)
     parser.add_argument('--workers', type=int, default=3)
@@ -348,7 +459,13 @@ def run_cli(args):
         return {'stop_requested': True, 'note': 'In-flight responses will be saved before stopping'}
     if args.action == 'report':
         return export(args.out)
-    settings = api_settings(args.env_file)
+    settings = api_settings(args.env_file, args.api_prefix)
+    if args.action == 'refine':
+        if not args.from_review:
+            raise ValueError('refine requires --from-review and a new --out directory')
+        m = prepare_retry(args.from_review, args.out, settings, args.retry_chars, args.retry_context)
+        return {'chunks': len(m['chunks']), 'refined_parent_chunks': len(m['refinement']['retry_ids']),
+                'reused_parent_chunks': len(m['refinement']['reused_ids']), 'api_calls': 0}
     if args.action == 'prepare':
         m = prepare(args.input, args.out, settings, args.chunk_chars, args.context_chars)
         return {'prepared_chunks': len(m['chunks']), 'source_sha256': m['source_sha256'], 'api_calls': 0}

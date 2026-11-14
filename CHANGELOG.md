@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Refine only incomplete text-review ranges into smaller chunks, reuse valid paid responses, preserve existing findings and cumulative usage, and validate complete source coverage.
+- Allow standalone text-review commands and the batch runner to select an API environment prefix.
+
 ## 0.2.0
 
 - Publish a clean open-source package without book data or private history.

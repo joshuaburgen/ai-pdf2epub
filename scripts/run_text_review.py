@@ -14,10 +14,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', default='output/deepseek_text_repair')
     parser.add_argument('--env-file', default='.env.local')
+    parser.add_argument('--api-prefix', default='DEEPSEEK')
     parser.add_argument('--workers', type=int, default=3)
     parser.add_argument('--passes', type=int, choices=range(1, 4), default=3)
     args = parser.parse_args()
-    out, settings = Path(args.out), api_settings(args.env_file)
+    out, settings = Path(args.out), api_settings(args.env_file, args.api_prefix)
     for attempt in range(1, args.passes+1):
         write_json(out/'batch_state.json', {'status': 'running', 'pid': os.getpid(),
                    'pass': attempt, 'updated_unix': time.time()})
