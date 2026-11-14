@@ -12,6 +12,7 @@ runs/
 input/
 data/
 tools/
+/local-workspaces/
 page_*.png
 config/book.json
 .pytest_cache/

@@ -16,7 +16,7 @@ def check(root, secret_file=None):
                 if value:
                     secrets.append(value.encode())
     problems, size = [], 0
-    excluded = {'input', 'output', 'data', 'runs', 'tools', '.venv', '.venv-review', 'dist', 'build'}
+    excluded = {'input', 'output', 'data', 'runs', 'tools', 'local-workspaces', '.venv', '.venv-review', 'dist', 'build'}
     patterns = [rb'gh[pousr]_[A-Za-z0-9]{30,}', rb'github_pat_[A-Za-z0-9_]{30,}',
                 rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----']
     for name in filter(None, names):

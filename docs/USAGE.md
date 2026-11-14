@@ -1,5 +1,13 @@
 # 使用与故障恢复
 
+## 本地私人书籍工作区
+
+可将书籍原件、历史 OCR、模型回答、私有配置和已有运行环境放在仓库内的 `local-workspaces/<name>/`，由根 `.gitignore` 整体排除。通用代码继续在仓库根目录维护；私人资料不需要并入公开 Git 历史。
+
+迁移旧工作区时，应保留原始数据和历史校验记录，不要为了迁移而批量改写原始 OCR 或重算模型回答。Windows 上可在旧位置保留指向新位置的目录联接（junction），让依赖旧绝对路径的程序继续访问同一份文件。旧的严格路径身份缓存不一定可用新物理路径原地重建；继续审查时优先复用已经保存的任务清单，或在新的阶段目录导入已有 OCR，避免重新识别。
+
+`local-workspaces/` 中即使保留了旧 `.git` 和 `.env.local`，也应始终保持整个目录被忽略；不要使用 `git add -f` 强制加入。迁移后用 `git check-ignore` 和 `git ls-files local-workspaces` 检查边界。模型密钥只能在本机读取，不应粘贴到 issue 或提交记录。
+
 ## 配置书籍
 
 复制 `config/book.example.json` 为 `config/book.json`。`pdf` 和 `ocr` 是相对于配置文件的路径；`pandoc` 可写绝对路径、相对可执行文件路径或 PATH 命令 `pandoc`。每本书使用独立的 OCR 缓存和工作目录。配置、PDF 或页码范围发生变化时使用新的工作目录。
