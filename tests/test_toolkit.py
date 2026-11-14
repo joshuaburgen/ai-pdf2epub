@@ -308,7 +308,7 @@ class EndToEndTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_config(path)
             write_json(path, {"pdf": "input.pdf", "ocr": "ocr.jsonl", "title": "书"})
-            self.assertEqual(load_config(path)["pdf"], str(Path(d)/"input.pdf"))
+            self.assertEqual(load_config(path)["pdf"], str((Path(d)/"input.pdf").resolve()))
 
     def test_multicolumn_regression_keeps_original_source_indices(self):
         blocks = [b(0, "4", [10, 750, 40, 790], 4), b(1, "示例页眉", [70, 10, 500, 30], 4)]
