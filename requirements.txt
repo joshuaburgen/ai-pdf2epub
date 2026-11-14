@@ -1,0 +1,6 @@
+PyMuPDF>=1.24
+OpenCC>=1.1
+Pillow>=10
+certifi>=2024.8.30
+# Optional recognition dependencies are declared in pyproject.toml.
+# Install a PaddlePaddle GPU build compatible with your CUDA separately.

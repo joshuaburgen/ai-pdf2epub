@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77", "wheel>=0.41"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chinese-book-ocr-toolkit"
+version = "0.2.0"
+description = "Six-stage AI-assisted scanned Chinese PDF to EPUB with independent model judgment"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE.md"]
+requires-python = ">=3.11"
+dependencies = ["PyMuPDF>=1.24", "OpenCC>=1.1", "Pillow>=10", "certifi>=2024.8.30"]
+
+[project.urls]
+Homepage = "https://github.com/joshuaburgen/ai-pdf2epub"
+Issues = "https://github.com/joshuaburgen/ai-pdf2epub/issues"
+
+[project.optional-dependencies]
+dev = ["build>=1", "numpy>=1.24"]
+structure = ["paddleocr[doc-parser]>=3.7,<4"]
+second-engine = ["cnocr==2.3.3", "rapidocr==3.9.1"]
+
+[project.scripts]
+bookocr = "bookocr.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["bookocr*"]
