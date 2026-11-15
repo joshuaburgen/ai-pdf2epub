@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "chinese-book-ocr-toolkit"
 version = "0.2.0"
-description = "Six-stage AI-assisted scanned Chinese PDF to EPUB with independent model judgment"
+description = "Six-stage scanned Chinese PDF to EPUB with source-image AI review and minimal repairs"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "NOTICE.md"]

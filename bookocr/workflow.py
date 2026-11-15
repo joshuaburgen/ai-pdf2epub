@@ -6,14 +6,14 @@ from pathlib import Path
 import pymupdf
 from opencc import OpenCC
 
-from . import judgment, text_review, vision_review
+from . import judgment, source_review, text_review, vision_review
 from .epub import audit_epub, build_epub, write_audit
 from .pipeline import run
 from .storage import digest, load_config, read_json, signature, write_json
 
 
 STAGES = {1: 'OCR and layout', 2: 'Primary visual review', 3: 'Independent visual judgment and import',
-          4: 'Conservative residual text review', 5: 'Independent text judgment and import', 6: 'EPUB publication'}
+          4: 'Conservative residual text review', 5: 'Residual judgment and import', 6: 'EPUB publication'}
 
 
 def files_key(path):
@@ -21,6 +21,8 @@ def files_key(path):
 
 
 def execute(config, output, stage, **kwargs):
+    if kwargs.get('source_images') and stage != 5:
+        raise ValueError('--source-images is only valid for stage 5')
     if kwargs.get('apply') and stage not in {3, 5}:
         raise ValueError('--apply is only valid for judgment stages 3 and 5')
     if kwargs.get('submit') and stage not in {2, 3, 4, 5}:
@@ -40,7 +42,7 @@ def execute(config, output, stage, **kwargs):
 
 def _execute(config, output, stage, *, submit=False, apply=False, allow_pending=False, retry_failed=False,
             env_file='.env.local', ai_prefix='AI', judge_prefix='JUDGE', workers=2, pages='all',
-            device='gpu:0', settings=None, transport=None):
+            device='gpu:0', settings=None, transport=None, source_images=False):
     cfg = load_config(config)
     output = Path(output).resolve()
     pdf = Path(cfg['pdf']).resolve()
@@ -124,10 +126,31 @@ def _execute(config, output, stage, *, submit=False, apply=False, allow_pending=
         primary = provider(ai_prefix)
         target = review_directory('04-text', [digest(source), {k: primary[k] for k in ('base_url', 'model')}, text_review.PROMPT])
         manifest = text_review.prepare(source, target, primary)
-        bind('text_review', target, ('text_judgment', 'final_markdown', 'epub'))
+        bind('text_review', target, ('text_judgment', 'source_review', 'final_markdown', 'epub'))
         result = {'prepared': len(manifest['chunks']), 'directory': str(target), 'api_calls': 0}
         if submit:
             result = text_review.submit(target, primary, workers, retry_failed=retry_failed, **kwargs)
+    elif stage == 5 and source_images:
+        source = need('text_review')
+        report = text_review.export(source)
+        if report['status'] != 'awaiting_independent_evaluation' and not allow_pending:
+            raise ValueError('Text review incomplete; resume it or explicitly --allow-pending')
+        primary = provider(ai_prefix)
+        target = review_directory('05-source', [digest(source/'manifest.json'), digest(source/'issues.jsonl'),
+                                  primary['base_url'], primary['model'], source_review.PROMPT, source_review.PROFILE])
+        manifest = source_review.prepare(source, cfg['pdf'], target, primary)
+        bind('source_review', target)
+        result = {'prepared': len(manifest['tasks']), 'directory': str(target), 'api_calls': 0}
+        if submit and manifest['tasks']:
+            result = source_review.submit(target, primary, workers, retry_failed=retry_failed, **kwargs)
+        if apply:
+            report = source_review.export(target)
+            if report['missing_or_invalid'] and not allow_pending:
+                raise ValueError('Source judgments missing/invalid; resume or --allow-pending to retain originals')
+            accepted, _ = source_review.decisions(target, manifest)
+            destination = review_directory('05-final-source', [digest(target/'tasks.json'), accepted])
+            result = source_review.apply(target, destination)
+            bind('final_markdown', destination/'book_simplified.md', ('epub',))
     elif stage == 5:
         source = need('text_review')
         report = text_review.export(source)
@@ -188,6 +211,7 @@ def configure_parser(parser):
     parser.add_argument('--apply', action='store_true', help='Import validated judgments in stages 3/5')
     parser.add_argument('--allow-pending', action='store_true', help='Retain originals for missing/invalid judgments')
     parser.add_argument('--retry-failed', action='store_true')
+    parser.add_argument('--source-images', action='store_true', help='Stage 5: primary model verifies source images; uncertain items retained')
     parser.add_argument('--env-file', default='.env.local')
     parser.add_argument('--ai-prefix', default='AI')
     parser.add_argument('--judge-prefix', default='JUDGE')
@@ -198,4 +222,4 @@ def configure_parser(parser):
 
 def run_cli(args):
     return execute(args.config, args.out, args.stage, **{key: getattr(args, key) for key in (
-        'submit', 'apply', 'allow_pending', 'retry_failed', 'env_file', 'ai_prefix', 'judge_prefix', 'workers', 'pages', 'device')})
+        'submit', 'apply', 'allow_pending', 'retry_failed', 'env_file', 'ai_prefix', 'judge_prefix', 'workers', 'pages', 'device', 'source_images')})

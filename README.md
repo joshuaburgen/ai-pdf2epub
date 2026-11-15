@@ -12,7 +12,7 @@ flowchart LR
   B --> C[3 独立视觉复核并导入]
   C --> D[繁转简]
   D --> E[4 全文保守补漏]
-  E --> F[5 独立文本复核与最小修补]
+  E --> F[5 复核与最小修补]
   F --> G[6 EPUB打包与结构检查]
 ```
 
@@ -22,10 +22,10 @@ flowchart LR
 | 2 | 对照原图审查低置信度及规则命中的疑点块 | 支持图像输入的主模型，例如 DeepSeek |
 | 3 | 字形/全半角等价变化可直接导入；其余交独立模型看图复核，再通过正式审核表应用 | 独立视觉模型；不把模型自报置信度当准确率 |
 | 4 | 分段覆盖完整简体文本，只查明显错字、漏字、重复、机械顺序和严重标点错误 | 主模型，仅提出疑点 |
-| 5 | 独立判断意见是否必要，只应用已提出、通过复核的最小局部修补 | 独立模型；不增添新的编辑性修改 |
+| 5 | 复核疑点，只应用必要的最小局部修补 | 独立模型，或主模型参照原图复核；不增添编辑性修改 |
 | 6 | 从最终勘正文本生成封面、目录、配图与可重排 EPUB，检查链接和包结构 | Pandoc、OpenCC、PyMuPDF |
 
-步骤 2–5 支持 OpenAI-compatible Chat Completions。主模型和复核模型可来自不同服务；程序要求复核模型的服务/模型标识不同，但无法替用户判断哪个模型更强。步骤 3 的模型必须支持 `image_url`，步骤 5 可以另选文本模型。
+默认步骤 2–5 支持 OpenAI-compatible Chat Completions；第五步可选的原图补审使用 Responses 图像接口。主模型和独立复核模型可来自不同服务；独立路线要求服务/模型标识不同，但无法替用户判断哪个模型更强。步骤 3 的模型必须支持 `image_url`，步骤 5 可以另选文本模型。
 
 ## 安装
 
@@ -93,6 +93,8 @@ bookocr workflow --config config/book.json --out output/my-book --stage 6
 最终文件位置记录在 `output/my-book/workflow.json` 的 `artifacts.epub` 和 `artifacts.final_markdown`。各阶段使用独立目录；输入或模型切换后会建立新的审查版本，保留旧结果。
 
 ## 第四步的边界
+
+第五步也可选择让主模型参照原图复核所有候选：`bookocr workflow --config config/book.json --out output/my-book --stage 5 --source-images --submit --apply`。这不是独立模型复审。程序只自动应用模型明确看清原图、确认必要且通过原文定位和最小范围校验的修补；其余原文保留，任务写入 `next_stage.jsonl`。单独处理已有审查清单见[原图补审指南](docs/SOURCE_REVIEW.md)。
 
 - 只查前三步遗漏、明确妨碍理解的机械性错误；整段零问题是正常结果。
 - 能读通但拗口的译文不改，不做更自然的表达替换。

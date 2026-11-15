@@ -13,6 +13,35 @@ PANDOC = os.environ.get('PANDOC') or shutil.which('pandoc')
 
 
 class WorkflowTests(unittest.TestCase):
+    @unittest.skipUnless(PANDOC, 'Pandoc is required for source-image workflow integration')
+    def test_source_image_stage_applies_and_publishes_without_independent_text_model(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)/'source-route'
+            config = make_fixture(root, PANDOC)
+            settings = {name: {'base_url': 'https://offline.invalid/v1', 'model': name, 'key': 'offline'}
+                        for name in ('AI', 'JUDGE')}
+            for stage in range(1, 5):
+                execute(config, root/'run', stage, settings=settings, transport=fake_transport,
+                        submit=stage in {2, 3, 4}, apply=stage == 3)
+            def visual(url, key, body):
+                self.assertTrue(url.endswith('/responses'))
+                task = json.loads(body['input'][0]['content'][0]['text'])
+                value = {'task_id': task['task_id'], 'verdict': 'correct', 'certainty': 'certain',
+                         'source_readable': True, 'source_page': 1, 'source_reading': '開始',
+                         'original': '开使', 'replacement': '开始', 'evidence': 'Synthetic image prints 開始',
+                         'reason': 'Confirmed minimal OCR error'}
+                return {'status': 'completed', 'output': [{'type': 'message', 'content': [
+                    {'type': 'output_text', 'text': json.dumps(value)}]}]}
+            result = execute(config, root/'run', 5, settings={'AI': settings['AI']},
+                             source_images=True, submit=True, apply=True, transport=visual)
+            self.assertEqual(result['applied_patches'], 1)
+            self.assertIn('开始阅读', Path(result['markdown']).read_text(encoding='utf-8'))
+            self.assertTrue((Path(result['markdown']).parent/'images').is_dir())
+            publication = execute(config, root/'run', 6)
+            self.assertFalse(publication['errors'])
+            self.assertTrue(Path(publication['epub']).exists())
+
     def test_misplaced_apply_or_submit_flags_fail_before_creating_files(self):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d)/'not-created'
@@ -20,6 +49,8 @@ class WorkflowTests(unittest.TestCase):
                 execute('not-read.json', out, 2, apply=True)
             with self.assertRaises(ValueError):
                 execute('not-read.json', out, 6, submit=True)
+            with self.assertRaises(ValueError):
+                execute('not-read.json', out, 4, source_images=True)
             self.assertFalse(out.exists())
     @unittest.skipUnless(PANDOC, 'Pandoc is required for partial-book integration')
     def test_sample_page_selection_stays_partial_through_publication(self):

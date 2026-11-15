@@ -28,6 +28,8 @@ def main(argv=None):
     sub.add_argument("--model", default="chinese_cht_PP-OCRv3")
     from .text_review import configure_parser
     configure_parser(commands.add_parser("text-review", help="Review full Markdown and export evaluation tasks"))
+    from .source_review import configure_parser as source_parser
+    source_parser(commands.add_parser("source-review", help="Verify residual findings against PDF images and apply certain repairs"))
     from .workflow import configure_parser as workflow_parser
     workflow_parser(commands.add_parser("workflow", help="Six-stage AI-assisted PDF to EPUB workflow"))
     sub = commands.add_parser("demo", help="Offline six-stage fixture with real Pandoc publication")
@@ -40,6 +42,9 @@ def main(argv=None):
             result = run_demo(args.out, args.pandoc)
         elif args.command == "workflow":
             from .workflow import run_cli
+            result = run_cli(args)
+        elif args.command == "source-review":
+            from .source_review import run_cli
             result = run_cli(args)
         elif args.command == "text-review":
             from .text_review import run_cli
