@@ -27,6 +27,8 @@ class SourceReviewTests(unittest.TestCase):
                             'replacement': '这是演示文本，内容正常，这是什么，感受和开始。',
                             'source_reading': '這是演示文本，內容正常，這是什麼，感受和開始。'}]}
         parsed = review.parse(response(value), task)
+        nested = {'assessment': {k: v for k, v in value.items() if k != 'edits'}, 'edits': value['edits']}
+        self.assertEqual(review.parse(response(nested), task), parsed)
         self.assertTrue(parsed['auto_apply'])
         self.assertGreater(len(parsed['patches']), 1)
         for patch in parsed['patches']:
@@ -57,11 +59,13 @@ class SourceReviewTests(unittest.TestCase):
                 payload = json.loads(body['input'][0]['content'][0]['text'])
                 calls.append(payload['task_id'])
                 self.assertEqual(body['text']['format']['type'], 'json_schema')
+                self.assertEqual(body['text']['format']['schema']['required'], ['assessment', 'edits'])
                 self.assertEqual(sum(p['type'] == 'input_image' for p in body['input'][0]['content']), 5)
                 value = self.decision(payload)
                 value.pop('original'); value.pop('replacement'); value.pop('source_reading')
                 value['edits'] = [{'original': 'teh', 'replacement': 'the', 'source_reading': 'the'}]
-                return response(value)
+                edits = value.pop('edits')
+                return response({'assessment': value, 'edits': edits})
             review.submit(out, SETTINGS, transport=fake)
             self.assertEqual(calls, [task['task_id']])
             review.submit(out, SETTINGS, transport=lambda *a: self.fail('Paid retry repeated'))
