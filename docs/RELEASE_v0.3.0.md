@@ -9,6 +9,6 @@ Every residual OCR finding can now be checked against its source PDF images. Cle
 - Original PDF, OCR and earlier manuscripts are preserved; correction ledgers and follow-up tasks carry image references.
 - Also includes smaller-chunk retries for incomplete full-text reviews and configurable API environment prefixes.
 
-Validation: 94 local tests, including real Pandoc integration using original offline fixtures. Release packages contain generic code and documentation, not books, scans, real API responses or credentials. Model certainty is a judgment rather than an accuracy guarantee; source inconsistencies still block automatic repair.
+Validation: 95 local tests, including real Pandoc integration using original offline fixtures. Release packages contain generic code and documentation, not books, scans, real API responses or credentials. Model certainty is a judgment rather than an accuracy guarantee; source inconsistencies still block automatic repair.
 
 See [SOURCE_REVIEW.md](SOURCE_REVIEW.md) for commands and the review contract. Existing independent-model review remains available.

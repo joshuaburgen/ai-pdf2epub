@@ -18,6 +18,26 @@ def response(value, status='completed'):
 
 
 class SourceReviewTests(unittest.TestCase):
+    def test_variant_width_proofs_and_overlapping_context_anchors(self):
+        def task(quote):
+            return {'task_id': 'r', 'pages': [1], 'retry': {},
+                    'issue': {'quote': quote, 'start': 0, 'category': 'ocr_typo'}}
+        def value(edits):
+            return {'task_id': 'r', 'verdict': 'correct', 'certainty': 'certain', 'source_readable': True,
+                    'source_page': 1, 'evidence': 'Visible print', 'reason': 'OCR', 'edits': edits}
+        for quote, after, printed in [('战门', '战斗', '戰鬪'),
+                                      ('(注41下面', '(注41）下面', '（註41）下面')]:
+            with self.subTest(quote=quote):
+                parsed = review.parse(response(value([{'original': quote, 'replacement': after,
+                                                        'source_reading': printed}])), task(quote))
+                self.assertTrue(parsed['auto_apply'])
+        quote = '富有有影响力好像发病了'
+        edits = [{'original': '富有有影响力', 'replacement': '富有、有影响力', 'source_reading': '富有、有影響力'},
+                 {'original': '有影响力好像发病了', 'replacement': '有影响力）好像发病了', 'source_reading': '有影響力）好像發病了'}]
+        parsed = review.parse(response(value(edits)), task(quote))
+        self.assertEqual(len(parsed['patches']), 2)
+        self.assertLessEqual(parsed['patches'][0]['end'], parsed['patches'][1]['start'])
+
     def test_retry_accepts_traditional_anchor_and_splits_only_image_supported_changes(self):
         task = {'task_id': 'retry1', 'pages': [1], 'retry': {},
                 'issue': {'quote': '这是演示文本，内容正常，这是什么·，感受和开使。', 'start': 20, 'category': 'ocr_typo'}}
@@ -181,7 +201,7 @@ class SourceReviewTests(unittest.TestCase):
             for n, task in enumerate(manifest['tasks']):
                 value = self.decision(task)
                 if n:
-                    value.update(original='teh book', replacement='the book', source_reading='the book')
+                    value.update(original='teh book', replacement='new book', source_reading='new book')
                 write_json(out/'results'/f"{task['task_id']}.json", {
                     'request_key': review.task_key(manifest, task), 'response': response(value)})
             result = review.apply(out, Path(d)/'final')

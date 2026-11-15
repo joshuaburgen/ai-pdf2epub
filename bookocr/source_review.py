@@ -292,6 +292,32 @@ def response_text(response):
                    if p.get('type') == 'output_text')
 
 
+def source_form(text):
+    # MOE Dictionary of Chinese Character Variants, A04678-005:
+    # https://dict.variants.moe.edu.tw/dictView.jsp?ID=51895&la=1
+    text = text.replace('鬪', '鬥')
+    text = ''.join(chr(ord(c)-65248) if '\uff01' <= c <= '\uff5e' else c for c in text)
+    return OpenCC('t2s').convert(text)
+
+
+def minimal_patch(text, start, end, replacement):
+    original_end = end
+    while start < end and replacement and text[start] == replacement[0]:
+        start += 1
+        replacement = replacement[1:]
+    while start < end and replacement and text[end-1] == replacement[-1]:
+        end -= 1
+        replacement = replacement[:-1]
+    if start == end:
+        if end < original_end:
+            replacement += text[end]
+            end += 1
+        else:
+            start -= 1
+            replacement = text[start]+replacement
+    return {'start': start, 'end': end, 'original': text[start:end], 'replacement': replacement}
+
+
 def parse_retry(value, task):
     if isinstance(value, dict) and isinstance(value.get('assessment'), dict):
         value = {**value['assessment'], 'edits': value.get('edits')}
@@ -318,11 +344,11 @@ def parse_retry(value, task):
             before = converter.convert(before)
         if not before or quote.count(before) != 1 or before == after:
             raise ValueError('Retry edit does not uniquely match source')
-        printed = converter.convert(edit['source_reading'])
-        if printed == before:
+        printed = source_form(edit['source_reading'])
+        if printed == source_form(before):
             retained.append(edit)
             continue
-        if printed != after:
+        if printed != source_form(after):
             raise ValueError('Replacement differs from simplified visible source reading')
         offset = task['issue']['start']+quote.index(before)
         opcodes = [('replace', 0, len(before), 0, len(after))] if max(len(before), len(after)) <= 16 else difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes()
@@ -342,7 +368,10 @@ def parse_retry(value, task):
             if (len(original) > bound or len(replacement) > 16 or '\n' in original+replacement
                     or any(ch in original+replacement for ch in '`*[]<>') or '://' in original+replacement):
                 raise ValueError('Retry repair exceeds minimal scope')
-            patches.append({'original': original, 'replacement': replacement, 'start': offset+a, 'end': offset+b})
+            patch = minimal_patch(quote, offset+a-task['issue']['start'], offset+b-task['issue']['start'], replacement)
+            patch['start'] += task['issue']['start']
+            patch['end'] += task['issue']['start']
+            patches.append(patch)
     patches = sorted({(p['start'], p['end'], p['replacement']): p for p in patches}.values(), key=lambda p: p['start'])
     if len(patches) > 24 or any(a['end'] > b['start'] for a, b in zip(patches, patches[1:])):
         raise ValueError('Retry edits overlap or exceed patch count')
@@ -551,6 +580,7 @@ def submit(out, settings, workers=3, limit=None, retry_failed=False, transport=h
 def apply(out, target):
     out, target = Path(out).resolve(), Path(target).resolve()
     manifest, text = load(out)
+    original_text = text
     results, missing = decisions(out, manifest)
     fingerprint = signature(results)
     ledger_path = target/'source_patch_ledger.json'
@@ -568,9 +598,10 @@ def apply(out, target):
         if value.get('auto_apply'):
             task_patches[task['task_id']] = []
             for edit in value.get('patches', [value]):
-                patch = (edit['start'], edit['end'], edit['replacement'])
-                if text[patch[0]:patch[1]] != edit['original']:
+                if text[edit['start']:edit['end']] != edit['original']:
                     raise ValueError('Source patch no longer matches original')
+                normalized = minimal_patch(text, edit['start'], edit['end'], edit['replacement'])
+                patch = (normalized['start'], normalized['end'], normalized['replacement'])
                 patches.setdefault(patch, []).append(task['task_id'])
                 task_patches[task['task_id']].append(patch)
             status = 'candidate'
@@ -609,7 +640,9 @@ def apply(out, target):
                'conflicts': len(conflicts), 'original_preserved': True}
     write_json(ledger_path, {'source_review': str(out), 'source_sha256': manifest['source_sha256'],
                'decisions_sha256': fingerprint, 'target_sha256': digest(target/'book_simplified.md'),
-               'summary': summary, 'decisions': ledger})
+               'summary': summary, 'decisions': ledger,
+               'patches': [{'start': a, 'end': b, 'original': original_text[a:b], 'replacement': r,
+                            'task_ids': patches[(a, b, r)]} for a, b, r in applicable]})
     atomic_text(target/'next_stage.jsonl', ''.join(json.dumps(t, ensure_ascii=False)+'\n' for t in followup))
     write_json(target/'summary.json', summary)
     return summary

@@ -40,6 +40,8 @@ bookocr source-review apply --out output/source-retry --target output/source-fin
 
 如果模型自称应改，但它明确读出的原图文字转简后恰与正文原片段相同，程序按“只校OCR、不改原书”规则保留该片段，记录 `retain_printed_original` 和原模型判断；不会把这种语义性改写继续当作缺乏图像证据的未决纠错。
 
+图文等价核验兼容全半角 ASCII 标点，并补充经[教育部异体字字典 A04678-005](https://dict.variants.moe.edu.tw/dictView.jsp?ID=51895&la=1)确认的 `鬪→鬥` 字形关系，再交给 OpenCC；不使用会将上标等内容折叠的广义 Unicode 兼容归一化。补丁先移除两端未变的上下文，再检查实际改动是否重叠；仅共享定位上下文的两处修补可以分别应用。台账的 `patches` 列表记录最终实际区间，可从冻结正文重放验证。
+
 - 引用精确匹配冻结正文，页码来自正文的 PDF 页码标记；页码是物理页码，须与输入 PDF 一致。
 - 每页提供全页预览及重叠高清上下分片；漏字、顺序、断句问题额外提供相邻页。PDF、正文、候选、图片、提示词、接口参数和模型均绑定缓存身份。
 - 模型必须返回 `correct`、`certainty=certain`、`source_readable=true`，并给出实际印刷文字、页码和图像依据。印刷文字经 OpenCC 转简后须与替换一致。这些是模型的判断，不能当作准确率保证。
