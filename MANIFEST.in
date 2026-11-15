@@ -12,3 +12,4 @@ prune data
 prune runs
 prune tools
 prune .venv
+prune local-workspaces

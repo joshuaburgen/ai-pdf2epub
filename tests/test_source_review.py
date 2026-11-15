@@ -18,6 +18,82 @@ def response(value, status='completed'):
 
 
 class SourceReviewTests(unittest.TestCase):
+    def test_retry_accepts_traditional_anchor_and_splits_only_image_supported_changes(self):
+        task = {'task_id': 'retry1', 'pages': [1], 'retry': {},
+                'issue': {'quote': '这是演示文本，内容正常，这是什么·，感受和开使。', 'start': 20, 'category': 'ocr_typo'}}
+        value = {'task_id': 'retry1', 'verdict': 'correct', 'certainty': 'certain',
+                 'source_readable': True, 'source_page': 1, 'evidence': 'Visible scan', 'reason': 'OCR differences',
+                 'edits': [{'original': '這是演示文本，內容正常，這是什麽·，感受和開使。',
+                            'replacement': '这是演示文本，内容正常，这是什么，感受和开始。',
+                            'source_reading': '這是演示文本，內容正常，這是什麼，感受和開始。'}]}
+        parsed = review.parse(response(value), task)
+        self.assertTrue(parsed['auto_apply'])
+        self.assertGreater(len(parsed['patches']), 1)
+        for patch in parsed['patches']:
+            self.assertEqual(task['issue']['quote'][patch['start']-20:patch['end']-20], patch['original'])
+            self.assertLessEqual(len(patch['original']), 16)
+        bad = {**value, 'edits': [{'original': '开使', 'replacement': '开始', 'source_reading': '開使'}]}
+        retained = review.parse(response(bad), task)
+        self.assertEqual(retained['verdict'], 'unchanged')
+        self.assertFalse(retained['auto_apply'])
+        self.assertEqual(retained['model_verdict'], 'correct')
+
+    def test_retry_reuses_closed_results_and_only_calls_unresolved_tasks(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, _, parent, first = self.fixture(d, overlap=True)
+            review.submit(parent, SETTINGS, transport=self.fake())
+            task = first['tasks'][1]
+            write_json(parent/'results'/f"{task['task_id']}.json", {
+                'request_key': review.task_key(first, task), 'response': response(self.decision(
+                    task, verdict='uncertain', certainty='uncertain', original='', replacement=''))})
+            out = Path(d)/'retry'
+            child = review.prepare_retry(parent, out, SETTINGS)
+            self.assertEqual(len(child['refinement']['retry_ids']), 1)
+            self.assertEqual(len(child['refinement']['reused_ids']), 1)
+            closed = child['tasks'][0]
+            self.assertEqual(review.task_key(child, closed), review.task_key(first, closed))
+            calls = []
+            def fake(url, key, body):
+                payload = json.loads(body['input'][0]['content'][0]['text'])
+                calls.append(payload['task_id'])
+                self.assertEqual(body['text']['format']['type'], 'json_schema')
+                self.assertEqual(sum(p['type'] == 'input_image' for p in body['input'][0]['content']), 5)
+                value = self.decision(payload)
+                value.pop('original'); value.pop('replacement'); value.pop('source_reading')
+                value['edits'] = [{'original': 'teh', 'replacement': 'the', 'source_reading': 'the'}]
+                return response(value)
+            review.submit(out, SETTINGS, transport=fake)
+            self.assertEqual(calls, [task['task_id']])
+            review.submit(out, SETTINGS, transport=lambda *a: self.fail('Paid retry repeated'))
+            result = review.apply(out, Path(d)/'final')
+            self.assertEqual(result['applied_patches'], 1)
+            self.assertEqual(result['applied_findings'], 2)
+            self.assertEqual(result['next_stage'], 0)
+            saved = read_json(parent/'tasks.json')
+            write_json(parent/'tasks.json', {**saved, 'dpi': 121})
+            with self.assertRaises(ValueError):
+                review.load(out)
+
+    def test_multi_edit_conflict_keeps_entire_decision_atomic(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, _, parent, _ = self.fixture(d, overlap=True)
+            out = Path(d)/'retry'
+            child = review.prepare_retry(parent, out, SETTINGS)
+            for index, task in enumerate(child['tasks']):
+                value = self.decision(task)
+                for field in ('original', 'replacement', 'source_reading'):
+                    value.pop(field)
+                value['edits'] = [{'original': 'teh', 'replacement': 'the' if not index else 'THE',
+                                   'source_reading': 'the' if not index else 'THE'}]
+                if index:
+                    value['edits'].append({'original': 'book', 'replacement': 'books', 'source_reading': 'books'})
+                write_json(out/'results'/f"{task['task_id']}.json", {
+                    'request_key': review.task_key(child, task), 'response': response(value)})
+            result = review.apply(out, Path(d)/'final')
+            self.assertEqual(result['applied_patches'], 0)
+            self.assertEqual(result['next_stage'], 2)
+
+
     def fixture(self, directory, overlap=False):
         root = Path(directory)
         source, primary, out, pdf = root/'book.md', root/'primary', root/'visual', root/'source.pdf'

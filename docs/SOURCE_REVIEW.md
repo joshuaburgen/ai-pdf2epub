@@ -24,6 +24,20 @@ bookocr source-review apply --out output/source-review --target output/source-co
 
 ## 自动应用条件
 
+### 只重审未决项
+
+```powershell
+bookocr source-review refine --from-source-review output/source-review --out output/source-retry --dpi 240 --env-file .env.local
+bookocr source-review submit --out output/source-retry --env-file .env.local --workers 3
+bookocr source-review apply --out output/source-retry --target output/source-final
+```
+
+重审版本保留全部候选及已确认的收费回答，只向模型重发未决项。每项补充相邻页、全页预览和重叠高清四分片，并附前次回答及校验错误供模型重新核对。父清单哈希、任务划分及原图都保持可追溯；旧结果不被覆盖。可对新版本继续 `refine`，最多保留八层原图复核祖先。
+
+重审使用 JSON Schema，并要求 `edits` 数组；模型可分开提交同一疑点中的多处小修补。繁体原片段只有经 OpenCC 转简后能在简体引文中唯一匹配时才可定位。印刷文字与目标替换仍须转简后完全相等。较长但有图像依据的替换会确定性拆成有边界的小补丁，每处仍受原有长度和结构限制；同一判断的任一补丁冲突时，整项保留原文，不部分应用。
+
+如果模型自称应改，但它明确读出的原图文字转简后恰与正文原片段相同，程序按“只校OCR、不改原书”规则保留该片段，记录 `retain_printed_original` 和原模型判断；不会把这种语义性改写继续当作缺乏图像证据的未决纠错。
+
 - 引用精确匹配冻结正文，页码来自正文的 PDF 页码标记；页码是物理页码，须与输入 PDF 一致。
 - 每页提供全页预览及重叠高清上下分片；漏字、顺序、断句问题额外提供相邻页。PDF、正文、候选、图片、提示词、接口参数和模型均绑定缓存身份。
 - 模型必须返回 `correct`、`certainty=certain`、`source_readable=true`，并给出实际印刷文字、页码和图像依据。印刷文字经 OpenCC 转简后须与替换一致。这些是模型的判断，不能当作准确率保证。
