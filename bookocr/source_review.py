@@ -52,6 +52,12 @@ source_reading经OpenCC转简必须与replacement完全一致，不要把解释�
 "source_readable":true,"source_page":1,"evidence":"可见字形和位置","reason":"结论",
 "edits":[{"original":"简体原文","replacement":"简体替换","source_reading":"实际印刷片段"}]}。
 unchanged或uncertain时edits必须为空。'''
+RETRY_PROMPT += '''
+若判correct，必须实际填写edits，不能只在reason里描述修改。只允许unchanged/uncertain返回空edits。
+例如正文“离开o读者”，图中“離開。讀者”，应给original="离开o读者"、replacement="离开。读者"、source_reading="離開。讀者"。
+插入标点时只取紧邻的短片段；例如图中“41）下”，正文“41下”，则original="41下"、replacement="41）下"、source_reading="41）下"。
+原图全角括号就保留全角，不要在replacement中擅自换成半角。source_reading不要漏掉原片段的前后字。
+本轮优先查看输入主PDF页，再看邻页；不必猜测未附上的页。'''
 
 
 def image_map(manifest, task):
@@ -59,7 +65,7 @@ def image_map(manifest, task):
 
 
 def retry_format(pages):
-    fields = {k: {'type': 'string'} for k in ('task_id', 'verdict', 'certainty', 'evidence', 'reason')}
+    fields = {k: {'type': 'string', 'minLength': 1} for k in ('task_id', 'verdict', 'certainty', 'evidence', 'reason')}
     fields['verdict']['enum'] = ['correct', 'unchanged', 'uncertain']
     fields['certainty']['enum'] = ['certain', 'uncertain']
     fields.update(source_readable={'type': 'boolean'}, source_page={'type': 'integer', 'enum': pages},
@@ -67,7 +73,9 @@ def retry_format(pages):
                          'properties': {k: {'type': 'string'} for k in ('original', 'replacement', 'source_reading')},
                          'required': ['original', 'replacement', 'source_reading'], 'additionalProperties': False}})
     return {'type': 'json_schema', 'name': 'source_verdict', 'schema': {'type': 'object',
-            'properties': fields, 'required': list(fields), 'additionalProperties': False}}
+            'properties': fields, 'required': list(fields), 'additionalProperties': False,
+            'anyOf': [{'properties': {'verdict': {'enum': ['correct']}, 'edits': {'minItems': 1}}},
+                      {'properties': {'verdict': {'enum': ['unchanged', 'uncertain']}, 'edits': {'maxItems': 0}}}]}}
 
 
 def render_page(document, number, out, dpi, prefix='images', quadrants=False):
@@ -119,8 +127,11 @@ def prepare_retry(parent, out, settings, dpi=240):
             previous = response_text(record['response'])
         except (ValueError, KeyError, TypeError):
             previous = ''
-        pages = sorted({n for p in old['pages'] for n in (p-1, p, p+1) if 1 <= n <= manifest['pdf_pages']})
-        tasks.append({**old, 'pages': pages, 'retry': {'instructions': RETRY_PROMPT,
+        base_pages = issue_pages(old['issue'], text, manifest['pdf_pages'])
+        pages = sorted({n for p in base_pages for n in (p-1, p, p+1) if 1 <= n <= manifest['pdf_pages']})
+        focus = old['issue']['pdf_page']
+        tasks.append({**old, 'pages': pages, 'image_order': [focus]+[p for p in pages if p != focus],
+                      'retry': {'instructions': RETRY_PROMPT, 'page_strategy': 'focus_neighbors',
                       'previous_reply': previous, 'previous_error': record.get('error', ''),
                       'contract': 'minimal_edits_v2', 'format': retry_format(pages)}})
         retry_ids.append(old['task_id'])
@@ -128,12 +139,11 @@ def prepare_retry(parent, out, settings, dpi=240):
         raise ValueError('No unresolved findings to retry')
     # Copy byte-identical old evidence so reused response keys remain valid.
     groups = [manifest['images']]+[image_map(manifest, t) for t in manifest['tasks'] if 'retry' in t]
-    for group in groups:
-        for infos in group.values():
-            for info in infos:
-                target = out/info['path']
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(parent/info['path'], target)
+    unique = {i['path']: i for group in groups for infos in group.values() for i in infos}
+    for info in unique.values():
+        target = out/info['path']
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(parent/info['path'], target)
     retry_images = dict(manifest.get('retry_images', {}))
     with pymupdf.open(manifest['pdf']) as document:
         for number in sorted({p for t in tasks if t['task_id'] in retry_ids for p in t['pages']}):
@@ -256,10 +266,13 @@ def load(out, verify_images=True, seen=None):
                     raise ValueError('Reused task changed')
                 expected_pages = old['pages']
             else:
-                expected_pages = sorted({n for p in old['pages'] for n in (p-1, p, p+1) if 1 <= n <= manifest['pdf_pages']})
+                base_pages = expected_pages if task['retry'].get('page_strategy') == 'focus_neighbors' else old['pages']
+                expected_pages = sorted({n for p in base_pages for n in (p-1, p, p+1) if 1 <= n <= manifest['pdf_pages']})
         images = image_map(manifest, task)
         if (task['pages'] != expected_pages or any(str(p) not in images for p in task['pages'])):
             raise ValueError('Source review image pages changed')
+        if 'image_order' in task and (sorted(task['image_order']) != task['pages'] or task['image_order'][0] != issue['pdf_page']):
+            raise ValueError('Source review image order changed')
     if verify_images:
         unique = {i['path']: i for t in manifest['tasks'] for p in t['pages'] for i in image_map(manifest, t)[str(p)]}
         for info in unique.values():
@@ -485,7 +498,7 @@ def submit(out, settings, workers=3, limit=None, retry_failed=False, transport=h
         if 'retry' in task:
             payload['previous_attempt'] = {k: task['retry'][k] for k in ('previous_reply', 'previous_error')}
         content = [{'type': 'input_text', 'text': json.dumps(payload, ensure_ascii=False)}]
-        for page in task['pages']:
+        for page in task.get('image_order', task['pages']):
             for info in image_map(manifest, task)[str(page)]:
                 content += [{'type': 'input_text', 'text': f"PDF page {page}, {info['part']}"},
                             {'type': 'input_image', 'image_url': 'data:image/png;base64,'+
